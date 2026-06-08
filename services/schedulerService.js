@@ -158,9 +158,18 @@ class SchedulerService {
     const fastTrackApplications = await Application.find({
       fastTrackApproved: true,
       fastTrackSupplementDeadline: { $exists: true },
-      currentStatus: { $in: [APPLICATION_STATUS.PENDING_APPROVAL, APPLICATION_STATUS.APPROVED] },
+      fastTrackRevoked: false,
+      currentStatus: { 
+        $in: [
+          APPLICATION_STATUS.PENDING_APPROVAL, 
+          APPLICATION_STATUS.PARALLEL_APPROVAL,
+          APPLICATION_STATUS.APPROVED,
+          APPLICATION_STATUS.SUBMITTED,
+          APPLICATION_STATUS.TIMEOUT_ESCALATED
+        ] 
+      },
       fastTrackMaterialsSubmitted: false
-    }).populate('applicant', 'name phone');
+    }).populate('applicant', 'name phone').populate('serviceItem', 'itemCode itemName');
 
     for (const application of fastTrackApplications) {
       const deadline = application.fastTrackSupplementDeadline;
@@ -200,7 +209,15 @@ class SchedulerService {
           }
         );
 
-        revoked.push(application._id);
+        revoked.push({
+          applicationId: application._id,
+          applicationNo: application.applicationNo,
+          itemCode: application.serviceItem?.itemCode,
+          itemName: application.serviceItem?.itemName,
+          applicantName: application.applicant?.name,
+          deadline: deadline,
+          currentStatus: application.currentStatus
+        });
       }
       else if (deadline <= threeDaysLater && deadline > now) {
         const existingNotification = await Notification.findOne({
@@ -219,12 +236,26 @@ class SchedulerService {
               recipients: [{ user: application.applicant._id, userType: 'applicant' }]
             }
           );
-          reminded.push(application._id);
+          reminded.push({
+            applicationId: application._id,
+            applicationNo: application.applicationNo,
+            itemCode: application.serviceItem?.itemCode,
+            itemName: application.serviceItem?.itemName,
+            applicantName: application.applicant?.name,
+            deadline: deadline,
+            daysRemaining: Math.ceil((deadline - now) / (1000 * 60 * 60 * 24)),
+            currentStatus: application.currentStatus
+          });
         }
       }
     }
 
-    return { reminded: reminded.length, revoked: revoked.length };
+    return { 
+      reminded: reminded.length, 
+      revoked: revoked.length,
+      remindedApplications: reminded,
+      revokedApplications: revoked
+    };
   }
 
   async getAdminAndSupervisorRecipients() {
@@ -260,7 +291,9 @@ class SchedulerService {
           name: '快速通道检查',
           result: {
             reminded: result.reminded,
-            revoked: result.revoked
+            revoked: result.revoked,
+            remindedApplications: result.remindedApplications,
+            revokedApplications: result.revokedApplications
           },
           message: `快速通道检查完成：提醒${result.reminded}个，撤销${result.revoked}个`
         };
