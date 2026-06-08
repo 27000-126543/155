@@ -46,13 +46,14 @@ exports.register = asyncHandler(async (req, res) => {
 });
 
 exports.login = asyncHandler(async (req, res) => {
-  const { username, password } = req.body;
+  const { username, phone, password } = req.body;
 
-  if (!username || !password) {
-    return errorResponse(res, '请提供用户名和密码', 400);
+  if ((!username && !phone) || !password) {
+    return errorResponse(res, '请提供用户名或手机号以及密码', 400);
   }
 
-  const user = await User.findOne({ username }).select('+password');
+  const query = username ? { username } : { phone };
+  const user = await User.findOne(query).select('+password');
   if (!user) {
     return errorResponse(res, '用户名或密码错误', 401);
   }

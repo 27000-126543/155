@@ -66,8 +66,9 @@ exports.exportReportToExcel = asyncHandler(async (req, res) => {
     return errorResponse(res, '报表不存在或导出失败', 404);
   }
 
+  const encodedFileName = encodeURIComponent(result.fileName);
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition', `attachment; filename="${result.fileName}"`);
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodedFileName}`);
   
   res.send(result.buffer);
 });
@@ -84,8 +85,10 @@ exports.exportReportByPeriodToExcel = asyncHandler(async (req, res) => {
     new Date(endDate)
   );
 
+  const fileName = `效能报表_${startDate}_${endDate}.xlsx`;
+  const encodedFileName = encodeURIComponent(fileName);
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition', `attachment; filename="效能报表_${startDate}_${endDate}.xlsx"`);
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodedFileName}`);
   
   res.send(result);
 });

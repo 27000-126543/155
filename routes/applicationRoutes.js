@@ -8,11 +8,14 @@ router.use(protect);
 router.get('/my', applicationController.getMyApplications);
 router.get('/fast-track/eligibility', applicationController.checkFastTrackEligibility);
 router.get('/approver/pending', isApprover, applicationController.getMyPendingApprovals);
+router.get('/approver/workbench', isApprover, applicationController.getApproverWorkbench);
+router.get('/:id/detail', isApprover, applicationController.getApprovalDetail);
 router.get('/:id', applicationController.getApplicationById);
 router.get('/:id/timeline', applicationController.getApplicationTimeline);
 
 router.post('/', applicationController.createApplication);
 router.post('/fast-track', applicationController.submitWithFastTrack);
+router.put('/:id/transfer', isApprover, applicationController.transferApproval);
 router.put('/:id/supplement', applicationController.supplementMaterials);
 router.put('/:id/cancel', applicationController.cancelApplication);
 router.put('/:id/approve', isApprover, applicationController.processApproval);

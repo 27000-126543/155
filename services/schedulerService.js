@@ -6,7 +6,8 @@ const notificationService = require('./notificationService');
 const Application = require('../models/Application');
 const Credit = require('../models/Credit');
 const User = require('../models/User');
-const { APPLICATION_STATUS, CREDIT_RECORD_TYPE, SCORE_CHANGE } = require('../utils/constants');
+const Notification = require('../models/Notification');
+const { APPLICATION_STATUS, CREDIT_RECORD_TYPE, SCORE_CHANGE, NOTIFICATION_TYPE } = require('../utils/constants');
 
 class SchedulerService {
   constructor() {
@@ -157,8 +158,8 @@ class SchedulerService {
     const fastTrackApplications = await Application.find({
       fastTrackApproved: true,
       fastTrackSupplementDeadline: { $exists: true },
-      currentStatus: { $in: [APPLICATION_STATUS.IN_PROGRESS, APPLICATION_STATUS.APPROVED] },
-      allMaterialsSubmitted: false
+      currentStatus: { $in: [APPLICATION_STATUS.PENDING_APPROVAL, APPLICATION_STATUS.APPROVED] },
+      fastTrackMaterialsSubmitted: false
     }).populate('applicant', 'name phone');
 
     for (const application of fastTrackApplications) {
@@ -182,15 +183,15 @@ class SchedulerService {
             type: CREDIT_RECORD_TYPE.LATE_MATERIAL_SUBMISSION,
             description: '快速通道材料补交逾期，审批被撤销',
             application: application._id,
-            scoreChange: SCORE_CHANGE.LATE_MATERIAL_SUBMISSION
+            scoreChange: SCORE_CHANGE.LATE_SUBMISSION
           });
-          credit.score = Math.max(0, credit.score + SCORE_CHANGE.LATE_MATERIAL_SUBMISSION);
+          credit.score = Math.max(0, credit.score + SCORE_CHANGE.LATE_SUBMISSION);
           credit.lateSubmissionCount++;
           await credit.save();
         }
 
         await notificationService.createNotification(
-          'fast_track_overdue',
+          NOTIFICATION_TYPE.FAST_TRACK_OVERDUE,
           '快速通道审批已撤销',
           `您的申请【${application.applicationNo}】因材料补交逾期，已被自动撤销。`,
           {
@@ -202,13 +203,15 @@ class SchedulerService {
         revoked.push(application._id);
       }
       else if (deadline <= threeDaysLater && deadline > now) {
-        const alreadyReminded = application.notifications?.some(
-          n => n.type === 'fast_track_deadline' && new Date(n.createdAt) > sevenDaysAgo
-        );
+        const existingNotification = await Notification.findOne({
+          'data.application': application._id,
+          type: NOTIFICATION_TYPE.FAST_TRACK_DEADLINE,
+          createdAt: { $gt: sevenDaysAgo }
+        });
 
-        if (!alreadyReminded) {
+        if (!existingNotification) {
           await notificationService.createNotification(
-            'fast_track_deadline',
+            NOTIFICATION_TYPE.FAST_TRACK_DEADLINE,
             '快速通道材料补交提醒',
             `您的申请【${application.applicationNo}】快速通道材料补交截止日期为${deadline.toLocaleDateString()}，请尽快补交材料，逾期将自动撤销审批。`,
             {

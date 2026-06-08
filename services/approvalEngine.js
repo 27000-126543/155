@@ -401,37 +401,48 @@ class ApprovalEngine {
 
   async checkAndProcessTimeouts() {
     const now = new Date();
+    const stats = { reminded: 0, transferred: 0, defaultApproved: 0 };
     
     const pendingApplications = await Application.find({
       currentStatus: { $in: [APPLICATION_STATUS.PENDING_APPROVAL, APPLICATION_STATUS.PARALLEL_APPROVAL] }
     }).populate('serviceItem applicant');
 
     for (const application of pendingApplications) {
-      await this.processApplicationTimeouts(application, now);
+      const result = await this.processApplicationTimeouts(application, now);
+      if (result) {
+        stats.reminded += result.reminded || 0;
+        stats.transferred += result.transferred || 0;
+        stats.defaultApproved += result.defaultApproved || 0;
+      }
     }
+
+    return stats;
   }
 
   async processApplicationTimeouts(application, now) {
     const serviceItem = application.serviceItem;
     const currentStep = serviceItem.approvalChain.find(s => s.stepOrder === application.currentStep);
     
-    if (!currentStep) return;
+    if (!currentStep) return null;
 
     if (application.currentStatus === APPLICATION_STATUS.PENDING_APPROVAL) {
-      await this.processSingleTimeout(application, currentStep, now);
+      return await this.processSingleTimeout(application, currentStep, now);
     } else if (application.currentStatus === APPLICATION_STATUS.PARALLEL_APPROVAL) {
-      await this.processParallelTimeout(application, currentStep, now);
+      return await this.processParallelTimeout(application, currentStep, now);
     }
+
+    return null;
   }
 
   async processSingleTimeout(application, step, now) {
+    const result = { reminded: 0, transferred: 0, defaultApproved: 0 };
     const assignment = application.approvalAssignments.find(
       a => a.stepOrder === application.currentStep && 
            a.status === 'pending' &&
            !a.isParallel
     );
 
-    if (!assignment) return;
+    if (!assignment) return result;
 
     const hoursSinceAssignment = diffHours(now, assignment.assignedAt);
     const hoursRemaining = step.timeoutHours - hoursSinceAssignment;
@@ -439,6 +450,7 @@ class ApprovalEngine {
     if (assignment.status === 'pending' && hoursSinceAssignment >= step.remindHours && !assignment.remindedAt) {
       assignment.status = 'reminded';
       assignment.remindedAt = now;
+      result.reminded = 1;
 
       const approver = await User.findById(assignment.approver);
       await notificationService.notifyApprovalReminder(
@@ -459,6 +471,7 @@ class ApprovalEngine {
         assignment.escalatedAt = now;
         assignment.escalatedTo = supervisor._id;
         assignment.status = 'escalated';
+        result.transferred = 1;
 
         application.currentStatus = APPLICATION_STATUS.TIMEOUT_ESCALATED;
         application.statusHistory.push({
@@ -480,14 +493,17 @@ class ApprovalEngine {
 
       await application.save();
     }
+
+    return result;
   }
 
   async processParallelTimeout(application, step, now) {
+    const result = { reminded: 0, transferred: 0, defaultApproved: 0 };
     const parallelGroup = application.parallelApprovals.find(
       pg => pg.stepOrder === application.currentStep
     );
 
-    if (!parallelGroup) return;
+    if (!parallelGroup) return result;
 
     let allHandled = true;
 
@@ -502,6 +518,7 @@ class ApprovalEngine {
           deptApproval.decision = APPROVAL_DECISION.DEFAULT_APPROVE;
           deptApproval.opinion = '超时未反馈，默认同意';
           deptApproval.decidedAt = now;
+          result.defaultApproved++;
 
           const assignment = application.approvalAssignments.find(
             a => a.parallelGroupId === parallelGroup.groupId &&
@@ -530,6 +547,7 @@ class ApprovalEngine {
     }
 
     await application.save();
+    return result;
   }
 
   async updateCreditAfterDecision(application, decision, isTimeout) {
@@ -592,7 +610,9 @@ class ApprovalEngine {
 
   async enableFastTrack(application, deadline) {
     application.useFastTrack = true;
+    application.fastTrackApproved = true;
     application.fastTrackDeadline = deadline;
+    application.fastTrackSupplementDeadline = deadline;
     application.fastTrackMaterialsSubmitted = false;
 
     const applicant = await User.findById(application.applicant);

@@ -6,6 +6,10 @@ class NotificationService {
     this.io = null;
   }
 
+  init(io) {
+    this.io = io;
+  }
+
   setSocketIO(io) {
     this.io = io;
   }

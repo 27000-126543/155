@@ -64,11 +64,21 @@ const applicationSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  fastTrackApproved: {
+    type: Boolean,
+    default: false
+  },
   fastTrackDeadline: Date,
+  fastTrackSupplementDeadline: Date,
   fastTrackMaterialsSubmitted: {
     type: Boolean,
     default: false
   },
+  fastTrackRevoked: {
+    type: Boolean,
+    default: false
+  },
+  fastTrackRevokeReason: String,
   currentStep: {
     type: Number,
     default: 0
@@ -114,6 +124,20 @@ const applicationSchema = new mongoose.Schema({
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User'
     },
+    transferredFrom: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    transferredTo: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    transferredAt: Date,
+    transferredBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    transferRemark: String,
     decision: {
       type: String,
       enum: ['approve', 'reject', 'return', 'default_approve']
@@ -142,6 +166,20 @@ const applicationSchema = new mongoose.Schema({
         enum: ['pending', 'completed', 'timeout_default'],
         default: 'pending'
       },
+      transferredFrom: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+      },
+      transferredTo: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+      },
+      transferredAt: Date,
+      transferredBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+      },
+      transferRemark: String,
       decision: {
         type: String,
         enum: ['approve', 'reject', 'default_approve']

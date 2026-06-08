@@ -100,9 +100,9 @@ exports.getServiceItemById = asyncHandler(async (req, res) => {
 });
 
 exports.getServiceItemByCode = asyncHandler(async (req, res) => {
-  const { code } = req.params;
+  const { itemCode } = req.params;
 
-  const serviceItem = await ServiceItem.findOne({ itemCode: code, status: 'published' })
+  const serviceItem = await ServiceItem.findOne({ itemCode, status: 'published' })
     .populate('approvalChain.department', 'code name')
     .populate('approvalChain.parallelDepartments', 'code name');
 
