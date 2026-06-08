@@ -29,6 +29,7 @@ const NOTIFICATION_TYPE = {
   APPROVAL_APPROVED: 'approval_approved',
   APPROVAL_REJECTED: 'approval_rejected',
   APPROVAL_RETURNED: 'approval_returned',
+  APPROVAL_TRANSFERRED: 'approval_transferred',
   PARALLEL_APPROVAL_START: 'parallel_approval_start',
   PARALLEL_APPROVAL_MERGED: 'parallel_approval_merged',
   CERTIFICATE_GENERATED: 'certificate_generated',

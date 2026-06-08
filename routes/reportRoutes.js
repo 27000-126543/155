@@ -19,6 +19,7 @@ router.post('/monthly', reportController.generateMonthlyReport);
 router.post('/custom', reportController.generateReportByPeriod);
 
 router.get('/', reportController.getReports);
+router.get('/:id/details', reportController.getReportDetails);
 router.get('/:id', reportController.getReportById);
 router.get('/:id/export', reportController.exportReportToExcel);
 router.get('/export/by-period', reportController.exportReportByPeriodToExcel);

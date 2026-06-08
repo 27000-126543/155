@@ -135,6 +135,12 @@ class CertificateService {
 
   async syncToSharingPlatform(certificateId) {
     try {
+      const sharePlatformUrl = process.env.SHARE_PLATFORM_URL;
+      
+      if (!sharePlatformUrl) {
+        throw new Error('共享平台地址未配置');
+      }
+
       const certificate = await Certificate.findById(certificateId)
         .populate('holder', 'name idCard')
         .populate('serviceItem', 'itemCode itemName sharingPlatformCode');
@@ -167,17 +173,19 @@ class CertificateService {
       };
 
       const response = await axios.post(
-        `${process.env.SHARE_PLATFORM_URL}/certificates`,
+        `${sharePlatformUrl}/certificates`,
         syncData,
         { timeout: 10000 }
       );
 
-      if (response.data.success) {
+      if (response.data && response.data.success) {
         certificate.sharingPlatformSync.synced = true;
         certificate.sharingPlatformSync.syncedAt = new Date();
         certificate.sharingPlatformSync.syncError = null;
+        await certificate.save();
+        return { success: true, certificateNo: certificate.certificateNo };
       } else {
-        throw new Error(response.data.message || '同步失败');
+        throw new Error(response.data?.message || '共享平台返回同步失败');
       }
     } catch (error) {
       console.error('同步证照到共享平台失败:', error.message);
@@ -187,6 +195,7 @@ class CertificateService {
         certificate.sharingPlatformSync.synced = false;
         certificate.sharingPlatformSync.syncError = error.message;
         certificate.sharingPlatformSync.syncRetries = (certificate.sharingPlatformSync.syncRetries || 0) + 1;
+        certificate.sharingPlatformSync.lastSyncAttempt = new Date();
 
         if (certificate.sharingPlatformSync.syncRetries < 3) {
           setTimeout(() => {
@@ -196,6 +205,13 @@ class CertificateService {
 
         await certificate.save();
       }
+
+      return { 
+        success: false, 
+        certificateNo: certificate?.certificateNo, 
+        error: error.message,
+        retryCount: certificate?.sharingPlatformSync.syncRetries || 0
+      };
     }
   }
 
@@ -344,29 +360,59 @@ class CertificateService {
   }
 
   async retryFailedSyncs() {
+    const sharePlatformUrl = process.env.SHARE_PLATFORM_URL;
+    
+    if (!sharePlatformUrl) {
+      return {
+        total: 0,
+        success: 0,
+        failed: 0,
+        skipped: 0,
+        results: [],
+        error: '共享平台地址未配置，所有同步任务跳过'
+      };
+    }
+
     const failedCerts = await Certificate.find({
       'sharingPlatformSync.synced': false,
       'sharingPlatformSync.syncRetries': { $lt: 5 }
-    });
+    }).populate('application', 'applicationNo');
 
     let successCount = 0;
     let failCount = 0;
+    let skipCount = 0;
     const results = [];
 
     for (const cert of failedCerts) {
       try {
-        await this.syncToSharingPlatform(cert._id);
-        successCount++;
-        results.push({
-          certificateNo: cert.certificateNo,
-          status: 'success'
-        });
+        const result = await this.syncToSharingPlatform(cert._id);
+        
+        if (result.success) {
+          successCount++;
+          results.push({
+            certificateNo: cert.certificateNo,
+            applicationNo: cert.application?.applicationNo,
+            status: 'success',
+            message: '同步成功'
+          });
+        } else {
+          failCount++;
+          results.push({
+            certificateNo: cert.certificateNo,
+            applicationNo: cert.application?.applicationNo,
+            status: 'failed',
+            error: result.error,
+            retryCount: result.retryCount
+          });
+        }
       } catch (error) {
         failCount++;
         results.push({
           certificateNo: cert.certificateNo,
+          applicationNo: cert.application?.applicationNo,
           status: 'failed',
-          error: error.message
+          error: error.message,
+          retryCount: cert.sharingPlatformSync.syncRetries || 0
         });
       }
     }
@@ -375,6 +421,7 @@ class CertificateService {
       total: failedCerts.length,
       success: successCount,
       failed: failCount,
+      skipped: skipCount,
       results
     };
   }

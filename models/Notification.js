@@ -6,6 +6,7 @@ const notificationSchema = new mongoose.Schema({
     enum: ['application_submitted', 'material_missing', 'material_verified',
            'approval_assigned', 'approval_reminder', 'approval_timeout',
            'approval_approved', 'approval_rejected', 'approval_returned',
+           'approval_transferred',
            'parallel_approval_start', 'parallel_approval_merged',
            'certificate_generated', 'certificate_synced',
            'fast_track_approved', 'fast_track_deadline', 'fast_track_overdue',

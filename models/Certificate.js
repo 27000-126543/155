@@ -67,7 +67,8 @@ const certificateSchema = new mongoose.Schema({
     syncRetries: {
       type: Number,
       default: 0
-    }
+    },
+    lastSyncAttempt: Date
   },
   verificationCode: String,
   generatedBy: {

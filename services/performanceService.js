@@ -317,6 +317,208 @@ class PerformanceService {
     };
   }
 
+  async getReportDetails(reportId, options = {}) {
+    const report = await PerformanceReport.findById(reportId);
+    if (!report) {
+      throw new Error('报表不存在');
+    }
+
+    const { 
+      page = 1, limit = 20, 
+      departmentId, serviceItemId,
+      filter: filterType, 
+      status
+    } = options;
+
+    const query = {
+      createdAt: { $gte: report.period.startDate, $lte: report.period.endDate }
+    };
+
+    if (departmentId) {
+      query['approvalAssignments.department'] = departmentId;
+    }
+    if (serviceItemId) {
+      query.serviceItem = serviceItemId;
+    }
+    if (status) {
+      query.currentStatus = status;
+    }
+
+    if (filterType) {
+      switch (filterType) {
+        case 'timeout':
+          query.hasTimeout = true;
+          break;
+        case 'returned':
+          query.currentStatus = APPLICATION_STATUS.RETURNED;
+          break;
+        case 'rejected':
+          query.currentStatus = APPLICATION_STATUS.REJECTED;
+          break;
+        case 'fastTrack':
+          query.useFastTrack = true;
+          break;
+        case 'completed':
+          query.currentStatus = { $in: [APPLICATION_STATUS.APPROVED, APPLICATION_STATUS.COMPLETED] };
+          break;
+        case 'pending':
+          query.currentStatus = { $in: [
+            APPLICATION_STATUS.PENDING_APPROVAL, 
+            APPLICATION_STATUS.PARALLEL_APPROVAL,
+            APPLICATION_STATUS.SUBMITTED,
+            APPLICATION_STATUS.TIMEOUT_ESCALATED
+          ]};
+          break;
+      }
+    }
+
+    const total = await Application.countDocuments(query);
+    const skip = (page - 1) * limit;
+
+    const applications = await Application.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .populate('serviceItem', 'itemCode itemName itemType')
+      .populate('applicant', 'name type')
+      .populate('approvalAssignments.department', 'name')
+      .populate('approvalAssignments.approver', 'name')
+      .populate('certificate', 'certificateNo');
+
+    const details = applications.map(app => ({
+      id: app._id,
+      applicationNo: app.applicationNo,
+      serviceItem: {
+        id: app.serviceItem?._id,
+        itemCode: app.serviceItem?.itemCode,
+        itemName: app.serviceItem?.itemName,
+        itemType: app.serviceItem?.itemType
+      },
+      applicant: {
+        id: app.applicant?._id,
+        name: app.applicantInfo?.name || app.applicant?.name,
+        type: app.applicantType
+      },
+      currentStatus: app.currentStatus,
+      currentStep: app.currentStep,
+      useFastTrack: app.useFastTrack,
+      hasTimeout: app.hasTimeout,
+      timeoutCount: app.timeoutCount,
+      processingDays: app.processingDays,
+      isTimelyCompleted: app.isTimelyCompleted,
+      submittedAt: app.submittedAt,
+      completedAt: app.completedAt,
+      createdAt: app.createdAt,
+      departments: [...new Set(app.approvalAssignments.map(a => a.department?.name).filter(Boolean))],
+      currentApprover: app.approvalAssignments.find(a => a.status === 'pending')?.approver?.name,
+      certificateNo: app.certificate?.certificateNo
+    }));
+
+    return {
+      details,
+      pagination: {
+        currentPage: parseInt(page),
+        perPage: parseInt(limit),
+        total,
+        totalPages: Math.ceil(total / limit)
+      },
+      filters: {
+        departmentId,
+        serviceItemId,
+        filterType,
+        status
+      },
+      reportInfo: {
+        id: report._id,
+        reportNo: report.reportNo,
+        period: report.period
+      }
+    };
+  }
+
+  async getAllReportDetailsForExport(reportId) {
+    const report = await PerformanceReport.findById(reportId);
+    if (!report) {
+      throw new Error('报表不存在');
+    }
+
+    const query = {
+      createdAt: { $gte: report.period.startDate, $lte: report.period.endDate }
+    };
+
+    const applications = await Application.find(query)
+      .sort({ createdAt: -1 })
+      .populate('serviceItem', 'itemCode itemName itemType')
+      .populate('applicant', 'name type')
+      .populate('approvalAssignments.department', 'name')
+      .populate('approvalAssignments.approver', 'name')
+      .populate('certificate', 'certificateNo');
+
+    return applications.map(app => ({
+      applicationNo: app.applicationNo,
+      itemCode: app.serviceItem?.itemCode || '',
+      itemName: app.serviceItem?.itemName || '',
+      itemType: this.getItemTypeName(app.serviceItem?.itemType) || '',
+      applicantName: app.applicantInfo?.name || app.applicant?.name || '',
+      applicantType: app.applicantType === 'personal' ? '个人' : '企业',
+      currentStatus: this.getStatusText(app.currentStatus),
+      useFastTrack: app.useFastTrack ? '是' : '否',
+      hasTimeout: app.hasTimeout ? '是' : '否',
+      timeoutCount: app.timeoutCount || 0,
+      processingDays: app.processingDays || 0,
+      isTimelyCompleted: app.isTimelyCompleted ? '是' : '否',
+      submittedAt: app.submittedAt ? app.submittedAt.toLocaleString() : '',
+      completedAt: app.completedAt ? app.completedAt.toLocaleString() : '',
+      departments: [...new Set(app.approvalAssignments.map(a => a.department?.name).filter(Boolean))].join('、'),
+      currentApprover: app.approvalAssignments.find(a => a.status === 'pending')?.approver?.name || '',
+      certificateNo: app.certificate?.certificateNo || ''
+    }));
+  }
+
+  getStatusText(status) {
+    const statusMap = {
+      [APPLICATION_STATUS.DRAFT]: '草稿',
+      [APPLICATION_STATUS.SUBMITTED]: '已提交',
+      [APPLICATION_STATUS.MATERIAL_MISSING]: '材料缺失',
+      [APPLICATION_STATUS.PENDING_APPROVAL]: '待审批',
+      [APPLICATION_STATUS.PARALLEL_APPROVAL]: '并联审批中',
+      [APPLICATION_STATUS.APPROVED]: '审批通过',
+      [APPLICATION_STATUS.REJECTED]: '已驳回',
+      [APPLICATION_STATUS.RETURNED]: '已退回',
+      [APPLICATION_STATUS.TIMEOUT_ESCALATED]: '超时转交',
+      [APPLICATION_STATUS.REVOKED]: '已撤销',
+      [APPLICATION_STATUS.COMPLETED]: '已完成'
+    };
+    return statusMap[status] || status;
+  }
+
+  fillDetailsSheet(sheet, details) {
+    sheet.columns = [
+      { header: '申请编号', key: 'applicationNo', width: 20 },
+      { header: '事项编码', key: 'itemCode', width: 15 },
+      { header: '事项名称', key: 'itemName', width: 25 },
+      { header: '事项类型', key: 'itemType', width: 12 },
+      { header: '申请人', key: 'applicantName', width: 15 },
+      { header: '申请人类型', key: 'applicantType', width: 10 },
+      { header: '当前状态', key: 'currentStatus', width: 12 },
+      { header: '快速通道', key: 'useFastTrack', width: 10 },
+      { header: '是否超时', key: 'hasTimeout', width: 10 },
+      { header: '超时次数', key: 'timeoutCount', width: 10 },
+      { header: '办理时长(天)', key: 'processingDays', width: 12 },
+      { header: '按时完成', key: 'isTimelyCompleted', width: 10 },
+      { header: '提交时间', key: 'submittedAt', width: 20 },
+      { header: '完成时间', key: 'completedAt', width: 20 },
+      { header: '涉及部门', key: 'departments', width: 25 },
+      { header: '当前审批人', key: 'currentApprover', width: 12 },
+      { header: '证照编号', key: 'certificateNo', width: 20 }
+    ];
+
+    details.forEach(row => sheet.addRow(row));
+
+    sheet.getRow(1).font = { bold: true };
+    sheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
+  }
+
   async exportReportToExcel(reportId) {
     const report = await PerformanceReport.findById(reportId);
     if (!report) {
@@ -341,6 +543,10 @@ class PerformanceService {
 
     const timeoutSheet = workbook.addWorksheet('超时排行');
     this.fillTimeoutSheet(timeoutSheet, report);
+
+    const details = await this.getAllReportDetailsForExport(reportId);
+    const detailsSheet = workbook.addWorksheet('申请明细');
+    this.fillDetailsSheet(detailsSheet, details);
 
     const fileName = `效能报表_${report.period.year}年${report.period.month}月_${report.reportNo}.xlsx`;
     const buffer = await workbook.xlsx.writeBuffer();

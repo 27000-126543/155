@@ -336,3 +336,19 @@ exports.getQuickStats = asyncHandler(async (req, res) => {
     }
   });
 });
+
+exports.getReportDetails = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { page = 1, limit = 20, departmentId, serviceItemId, filter, status } = req.query;
+
+  const result = await performanceService.getReportDetails(id, {
+    page: parseInt(page),
+    limit: parseInt(limit),
+    departmentId,
+    serviceItemId,
+    filter,
+    status
+  });
+
+  successResponse(res, result);
+});

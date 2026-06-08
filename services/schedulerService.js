@@ -324,9 +324,14 @@ class SchedulerService {
           result: {
             total: result.total,
             success: result.success,
-            failed: result.failed
+            failed: result.failed,
+            skipped: result.skipped,
+            results: result.results,
+            error: result.error
           },
-          message: `证照同步重试完成：成功${result.success}个，失败${result.failed}个`
+          message: result.error 
+            ? result.error 
+            : `证照同步重试完成：成功${result.success}个，失败${result.failed}个${result.skipped ? `，跳过${result.skipped}个` : ''}`
         };
       },
       creditRestrictionCheck: async () => {
