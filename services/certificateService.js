@@ -362,26 +362,80 @@ class CertificateService {
   async retryFailedSyncs() {
     const sharePlatformUrl = process.env.SHARE_PLATFORM_URL;
     
-    if (!sharePlatformUrl) {
-      return {
-        total: 0,
-        success: 0,
-        failed: 0,
-        skipped: 0,
-        results: [],
-        error: '共享平台地址未配置，所有同步任务跳过'
-      };
-    }
-
     const failedCerts = await Certificate.find({
       'sharingPlatformSync.synced': false,
       'sharingPlatformSync.syncRetries': { $lt: 5 }
     }).populate('application', 'applicationNo');
 
+    const total = failedCerts.length;
     let successCount = 0;
     let failCount = 0;
     let skipCount = 0;
     const results = [];
+
+    if (!sharePlatformUrl) {
+      const errorMsg = '共享平台地址未配置';
+      failCount = total;
+      
+      for (const cert of failedCerts) {
+        cert.sharingPlatformSync.synced = false;
+        cert.sharingPlatformSync.syncError = errorMsg;
+        cert.sharingPlatformSync.lastSyncAttempt = new Date();
+        await cert.save();
+        
+        results.push({
+          certificateNo: cert.certificateNo,
+          applicationNo: cert.application?.applicationNo,
+          status: 'failed',
+          error: errorMsg,
+          retryCount: cert.sharingPlatformSync.syncRetries || 0
+        });
+      }
+      
+      return {
+        total,
+        success: successCount,
+        failed: failCount,
+        skipped: skipCount,
+        results,
+        error: errorMsg
+      };
+    }
+
+    let platformAccessError = null;
+    try {
+      await axios.get(`${sharePlatformUrl}/health`, { timeout: 5000 });
+    } catch (error) {
+      platformAccessError = `共享平台访问失败: ${error.message}`;
+    }
+
+    if (platformAccessError) {
+      failCount = total;
+      
+      for (const cert of failedCerts) {
+        cert.sharingPlatformSync.synced = false;
+        cert.sharingPlatformSync.syncError = platformAccessError;
+        cert.sharingPlatformSync.lastSyncAttempt = new Date();
+        await cert.save();
+        
+        results.push({
+          certificateNo: cert.certificateNo,
+          applicationNo: cert.application?.applicationNo,
+          status: 'failed',
+          error: platformAccessError,
+          retryCount: cert.sharingPlatformSync.syncRetries || 0
+        });
+      }
+      
+      return {
+        total,
+        success: successCount,
+        failed: failCount,
+        skipped: skipCount,
+        results,
+        error: platformAccessError
+      };
+    }
 
     for (const cert of failedCerts) {
       try {
@@ -393,7 +447,8 @@ class CertificateService {
             certificateNo: cert.certificateNo,
             applicationNo: cert.application?.applicationNo,
             status: 'success',
-            message: '同步成功'
+            message: '同步成功',
+            retryCount: result.retryCount
           });
         } else {
           failCount++;
@@ -418,11 +473,12 @@ class CertificateService {
     }
 
     return {
-      total: failedCerts.length,
+      total,
       success: successCount,
       failed: failCount,
       skipped: skipCount,
-      results
+      results,
+      error: failCount > 0 ? '部分证照同步失败' : null
     };
   }
 

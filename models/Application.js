@@ -79,6 +79,7 @@ const applicationSchema = new mongoose.Schema({
     default: false
   },
   fastTrackRevokeReason: String,
+  fastTrackLastRemindedAt: Date,
   currentStep: {
     type: Number,
     default: 0

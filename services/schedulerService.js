@@ -150,9 +150,10 @@ class SchedulerService {
   async checkFastTrackSubmissions() {
     const now = new Date();
     const threeDaysLater = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000);
-    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
     const reminded = [];
+    const skipped = [];
     const revoked = [];
 
     const fastTrackApplications = await Application.find({
@@ -220,13 +221,25 @@ class SchedulerService {
         });
       }
       else if (deadline <= threeDaysLater && deadline > now) {
-        const existingNotification = await Notification.findOne({
-          'data.application': application._id,
-          type: NOTIFICATION_TYPE.FAST_TRACK_DEADLINE,
-          createdAt: { $gt: sevenDaysAgo }
-        });
+        const daysRemaining = Math.ceil((deadline - now) / (1000 * 60 * 60 * 24));
+        
+        const alreadyRemindedRecently = application.fastTrackLastRemindedAt && 
+          new Date(application.fastTrackLastRemindedAt) > oneDayAgo;
 
-        if (!existingNotification) {
+        if (alreadyRemindedRecently) {
+          skipped.push({
+            applicationId: application._id,
+            applicationNo: application.applicationNo,
+            itemCode: application.serviceItem?.itemCode,
+            itemName: application.serviceItem?.itemName,
+            applicantName: application.applicant?.name,
+            deadline: deadline,
+            daysRemaining,
+            currentStatus: application.currentStatus,
+            lastRemindedAt: application.fastTrackLastRemindedAt,
+            reason: '24小时内已提醒过，跳过重复提醒'
+          });
+        } else {
           await notificationService.createNotification(
             NOTIFICATION_TYPE.FAST_TRACK_DEADLINE,
             '快速通道材料补交提醒',
@@ -236,6 +249,10 @@ class SchedulerService {
               recipients: [{ user: application.applicant._id, userType: 'applicant' }]
             }
           );
+
+          application.fastTrackLastRemindedAt = now;
+          await application.save();
+
           reminded.push({
             applicationId: application._id,
             applicationNo: application.applicationNo,
@@ -243,7 +260,7 @@ class SchedulerService {
             itemName: application.serviceItem?.itemName,
             applicantName: application.applicant?.name,
             deadline: deadline,
-            daysRemaining: Math.ceil((deadline - now) / (1000 * 60 * 60 * 24)),
+            daysRemaining,
             currentStatus: application.currentStatus
           });
         }
@@ -253,7 +270,9 @@ class SchedulerService {
     return { 
       reminded: reminded.length, 
       revoked: revoked.length,
+      skipped: skipped.length,
       remindedApplications: reminded,
+      skippedApplications: skipped,
       revokedApplications: revoked
     };
   }
@@ -286,16 +305,25 @@ class SchedulerService {
       },
       fastTrackCheck: async () => {
         const result = await this.checkFastTrackSubmissions();
+        const messageParts = [];
+        if (result.reminded > 0) messageParts.push(`提醒${result.reminded}个`);
+        if (result.skipped > 0) messageParts.push(`跳过${result.skipped}个（已提醒过）`);
+        if (result.revoked > 0) messageParts.push(`撤销${result.revoked}个`);
+        
         return {
           task: 'fastTrackCheck',
           name: '快速通道检查',
           result: {
             reminded: result.reminded,
             revoked: result.revoked,
+            skipped: result.skipped,
             remindedApplications: result.remindedApplications,
+            skippedApplications: result.skippedApplications,
             revokedApplications: result.revokedApplications
           },
-          message: `快速通道检查完成：提醒${result.reminded}个，撤销${result.revoked}个`
+          message: messageParts.length > 0 
+            ? `快速通道检查完成：${messageParts.join('，')}` 
+            : '快速通道检查完成，无需要处理的申请'
         };
       },
       monthlyReport: async () => {

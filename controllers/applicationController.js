@@ -615,11 +615,34 @@ exports.getApproverWorkbench = asyncHandler(async (req, res) => {
   const approverId = req.user._id;
   const now = new Date();
 
+  let matchingItemIds = null;
+  if (itemCode) {
+    const ServiceItem = require('../models/ServiceItem');
+    const items = await ServiceItem.find(
+      { itemCode: { $regex: itemCode, $options: 'i' } },
+      '_id'
+    );
+    matchingItemIds = items.map(i => i._id);
+    if (matchingItemIds.length === 0) {
+      return successResponse(res, {
+        groups: {
+          pending: { count: 0, items: [] },
+          reminded: { count: 0, items: [] },
+          timeout: { count: 0, items: [] },
+          parallel: { count: 0, items: [] }
+        },
+        items: [],
+        pagination: { currentPage: 1, perPage: parseInt(limit), total: 0, totalPages: 0 },
+        filters: { itemCode, applicationNo, applicantName, department, remainingTime }
+      });
+    }
+  }
+
   const buildBaseQuery = () => {
     const query = {};
     
-    if (itemCode) {
-      query['serviceItem.itemCode'] = { $regex: itemCode, $options: 'i' };
+    if (matchingItemIds) {
+      query.serviceItem = { $in: matchingItemIds };
     }
     if (applicationNo) {
       query.applicationNo = { $regex: applicationNo, $options: 'i' };
@@ -627,19 +650,32 @@ exports.getApproverWorkbench = asyncHandler(async (req, res) => {
     if (applicantName) {
       query['applicantInfo.name'] = { $regex: applicantName, $options: 'i' };
     }
-    if (department) {
-      query['approvalAssignments.department'] = department;
-    }
     
     return query;
   };
 
-  const filterByRemainingTime = (apps, filter) => {
+  const filterByRemainingTime = (apps, filter, isParallel = false) => {
     if (!filter) return apps;
     return apps.filter(app => {
-      const assignment = app.approvalAssignments.find(a => 
-        a.approver.toString() === approverId.toString() && a.status === 'pending'
-      );
+      let assignment = null;
+      if (isParallel) {
+        const parallelGroup = app.parallelApprovals.find(pg => 
+          pg.departments.some(d => 
+            d.approver.toString() === approverId.toString() && d.status === 'pending'
+          )
+        );
+        if (parallelGroup) {
+          assignment = parallelGroup.departments.find(d => 
+            d.approver.toString() === approverId.toString() && d.status === 'pending'
+          );
+        }
+      } else {
+        assignment = app.approvalAssignments.find(a => 
+          a.approver.toString() === approverId.toString() && 
+          ['pending', 'reminded', 'timeout', 'escalated'].includes(a.status)
+        );
+      }
+      
       if (!assignment || !assignment.deadline) return filter === 'all';
       
       const hoursLeft = (new Date(assignment.deadline) - now) / (1000 * 60 * 60);
@@ -650,6 +686,29 @@ exports.getApproverWorkbench = asyncHandler(async (req, res) => {
         case 'week': return hoursLeft <= 168;
         case 'overdue': return hoursLeft < 0;
         default: return true;
+      }
+    });
+  };
+
+  const filterByDepartment = (apps, deptId, isParallel = false) => {
+    if (!deptId) return apps;
+    return apps.filter(app => {
+      if (isParallel) {
+        return app.parallelApprovals.some(pg => 
+          pg.departments.some(d => 
+            d.approver.toString() === approverId.toString() && 
+            d.status === 'pending' &&
+            (d.department._id?.toString() === deptId.toString() || 
+             d.department.toString() === deptId.toString())
+          )
+        );
+      } else {
+        return app.approvalAssignments.some(a => 
+          a.approver.toString() === approverId.toString() && 
+          ['pending', 'reminded', 'timeout', 'escalated'].includes(a.status) &&
+          (a.department._id?.toString() === deptId.toString() || 
+           a.department.toString() === deptId.toString())
+        );
       }
     });
   };
@@ -704,10 +763,15 @@ exports.getApproverWorkbench = asyncHandler(async (req, res) => {
       .sort({ 'parallelApprovals.departments.deadline': 1 })
   ]);
 
-  const filteredPending = filterByRemainingTime(pendingApps, remainingTime);
-  const filteredReminded = filterByRemainingTime(remindedApps, remainingTime);
-  const filteredTimeout = filterByRemainingTime(timeoutApps, remainingTime);
-  const filteredParallel = filterByRemainingTime(parallelApps, remainingTime);
+  let filteredPending = filterByRemainingTime(pendingApps, remainingTime, false);
+  let filteredReminded = filterByRemainingTime(remindedApps, remainingTime, false);
+  let filteredTimeout = filterByRemainingTime(timeoutApps, remainingTime, false);
+  let filteredParallel = filterByRemainingTime(parallelApps, remainingTime, true);
+
+  filteredPending = filterByDepartment(filteredPending, department, false);
+  filteredReminded = filterByDepartment(filteredReminded, department, false);
+  filteredTimeout = filterByDepartment(filteredTimeout, department, false);
+  filteredParallel = filterByDepartment(filteredParallel, department, true);
 
   const formatAssignment = (app) => {
     const assignment = app.approvalAssignments.find(a => 
@@ -1070,7 +1134,8 @@ exports.getApprovalDetail = asyncHandler(async (req, res) => {
 exports.transferApproval = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { targetApproverId, remark } = req.body;
-  const currentApproverId = req.user._id;
+  const currentUserId = req.user._id;
+  const isAdmin = req.user.type === 'admin';
 
   if (!targetApproverId) {
     return errorResponse(res, '请指定目标审批人', 400);
@@ -1097,36 +1162,72 @@ exports.transferApproval = asyncHandler(async (req, res) => {
     return errorResponse(res, '目标用户不是审批人', 400);
   }
 
-  let assignment = application.approvalAssignments.find(a => 
-    a.approver.toString() === currentApproverId.toString() &&
-    a.stepOrder === application.currentStep &&
-    !a.isParallel &&
-    ['pending', 'reminded', 'timeout', 'escalated'].includes(a.status)
-  );
-
-  let isParallel = false;
-  let parallelDept = null;
+  let assignment = null;
   let parallelGroup = null;
+  let parallelDept = null;
+  let isParallel = false;
+  let originalApproverId = null;
 
-  if (!assignment) {
-    parallelGroup = application.parallelApprovals.find(pg => 
-      pg.stepOrder === application.currentStep &&
-      pg.departments.some(d => 
-        d.approver.toString() === currentApproverId.toString() && d.status === 'pending'
-      )
+  if (isAdmin) {
+    assignment = application.approvalAssignments.find(a => 
+      a.stepOrder === application.currentStep &&
+      !a.isParallel &&
+      ['pending', 'reminded', 'timeout', 'escalated'].includes(a.status)
     );
 
-    if (parallelGroup) {
-      parallelDept = parallelGroup.departments.find(d => 
-        d.approver.toString() === currentApproverId.toString() && d.status === 'pending'
+    if (!assignment) {
+      parallelGroup = application.parallelApprovals.find(pg => 
+        pg.stepOrder === application.currentStep &&
+        pg.departments.some(d => d.status === 'pending')
       );
-      isParallel = true;
+
+      if (parallelGroup) {
+        parallelDept = parallelGroup.departments.find(d => d.status === 'pending');
+        isParallel = true;
+      }
+    }
+
+    if (assignment) {
+      originalApproverId = assignment.approver;
+    } else if (parallelDept) {
+      originalApproverId = parallelDept.approver;
+    }
+  } else {
+    assignment = application.approvalAssignments.find(a => 
+      a.approver.toString() === currentUserId.toString() &&
+      a.stepOrder === application.currentStep &&
+      !a.isParallel &&
+      ['pending', 'reminded', 'timeout', 'escalated'].includes(a.status)
+    );
+
+    if (!assignment) {
+      parallelGroup = application.parallelApprovals.find(pg => 
+        pg.stepOrder === application.currentStep &&
+        pg.departments.some(d => 
+          d.approver.toString() === currentUserId.toString() && d.status === 'pending'
+        )
+      );
+
+      if (parallelGroup) {
+        parallelDept = parallelGroup.departments.find(d => 
+          d.approver.toString() === currentUserId.toString() && d.status === 'pending'
+        );
+        isParallel = true;
+      }
+    }
+
+    if (assignment) {
+      originalApproverId = assignment.approver;
+    } else if (parallelDept) {
+      originalApproverId = parallelDept.approver;
     }
   }
 
   if (!assignment && !parallelDept) {
-    return errorResponse(res, '您没有待处理的此申请的审批任务', 403);
+    return errorResponse(res, isAdmin ? '没有找到待处理的审批任务' : '您没有待处理的此申请的审批任务', 403);
   }
+
+  const originalApprover = await User.findById(originalApproverId);
 
   if (assignment) {
     const deptId = assignment.department._id || assignment.department;
@@ -1135,10 +1236,10 @@ exports.transferApproval = asyncHandler(async (req, res) => {
       return errorResponse(res, '只能转派给同部门审批人', 400);
     }
 
-    assignment.transferredFrom = currentApproverId;
+    assignment.transferredFrom = originalApproverId;
     assignment.transferredTo = targetApproverId;
     assignment.transferredAt = new Date();
-    assignment.transferredBy = currentApproverId;
+    assignment.transferredBy = currentUserId;
     assignment.transferRemark = remark || '';
     assignment.approver = targetApproverId;
     assignment.assignedAt = new Date();
@@ -1152,10 +1253,10 @@ exports.transferApproval = asyncHandler(async (req, res) => {
       return errorResponse(res, '只能转派给同部门审批人', 400);
     }
 
-    parallelDept.transferredFrom = currentApproverId;
+    parallelDept.transferredFrom = originalApproverId;
     parallelDept.transferredTo = targetApproverId;
     parallelDept.transferredAt = new Date();
-    parallelDept.transferredBy = currentApproverId;
+    parallelDept.transferredBy = currentUserId;
     parallelDept.transferRemark = remark || '';
     parallelDept.approver = targetApproverId;
     parallelDept.assignedAt = new Date();
@@ -1164,10 +1265,14 @@ exports.transferApproval = asyncHandler(async (req, res) => {
     );
   }
 
+  const transferRemark = isAdmin 
+    ? `管理员临时转派：从${originalApprover?.name || '原审批人'}转派到${targetApprover.name}${remark ? '，备注：' + remark : ''}`
+    : `审批转派：从${req.user.name}转派到${targetApprover.name}${remark ? '，备注：' + remark : ''}`;
+
   application.statusHistory.push({
     status: 'transferred',
-    remark: `审批转派：从${req.user.name}转派到${targetApprover.name}${remark ? '，备注：' + remark : ''}`,
-    operator: currentApproverId,
+    remark: transferRemark,
+    operator: currentUserId,
     timestamp: new Date()
   });
 
@@ -1176,7 +1281,7 @@ exports.transferApproval = asyncHandler(async (req, res) => {
   await notificationService.createNotification(
     'approval_transferred',
     '审批任务转派',
-    `您有一条新的审批任务【${application.applicationNo}】，由${req.user.name}转派给您`,
+    `您有一条新的审批任务【${application.applicationNo}】，${isAdmin ? '由管理员' : '由' + req.user.name}转派给您`,
     {
       application: application._id,
       recipients: [{ user: targetApproverId, userType: 'approver' }]
@@ -1190,11 +1295,13 @@ exports.transferApproval = asyncHandler(async (req, res) => {
       currentStatus: application.currentStatus
     },
     transfer: {
-      from: currentApproverId,
+      from: originalApproverId,
+      fromName: originalApprover?.name,
       to: targetApproverId,
       toName: targetApprover.name,
+      isAdminTransfer: isAdmin,
       remark: remark || '',
       transferredAt: new Date()
     }
-  }, '审批转派成功');
+  }, isAdmin ? '管理员转派成功' : '审批转派成功');
 });
