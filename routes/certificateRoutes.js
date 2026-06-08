@@ -19,5 +19,6 @@ router.put('/:id/revoke', certificateController.revokeCertificate);
 router.post('/:id/retry-sync', certificateController.retrySync);
 router.get('/sync/status', certificateController.getSyncStatus);
 router.get('/sync/pending', certificateController.getPendingSyncList);
+router.get('/sync/retry-dashboard', certificateController.getSyncRetryDashboard);
 
 module.exports = router;

@@ -159,16 +159,6 @@ class SchedulerService {
     const fastTrackApplications = await Application.find({
       fastTrackApproved: true,
       fastTrackSupplementDeadline: { $exists: true },
-      fastTrackRevoked: false,
-      currentStatus: { 
-        $in: [
-          APPLICATION_STATUS.PENDING_APPROVAL, 
-          APPLICATION_STATUS.PARALLEL_APPROVAL,
-          APPLICATION_STATUS.APPROVED,
-          APPLICATION_STATUS.SUBMITTED,
-          APPLICATION_STATUS.TIMEOUT_ESCALATED
-        ] 
-      },
       fastTrackMaterialsSubmitted: false
     }).populate('applicant', 'name phone').populate('serviceItem', 'itemCode itemName');
 
@@ -176,6 +166,20 @@ class SchedulerService {
       const deadline = application.fastTrackSupplementDeadline;
       
       if (deadline <= now) {
+        if (application.fastTrackRevoked) {
+          skipped.push({
+            applicationId: application._id,
+            applicationNo: application.applicationNo,
+            itemCode: application.serviceItem?.itemCode,
+            itemName: application.serviceItem?.itemName,
+            applicantName: application.applicant?.name,
+            deadline: deadline,
+            currentStatus: application.currentStatus,
+            reason: '该申请已被撤销，跳过重复处理'
+          });
+          continue;
+        }
+
         application.currentStatus = APPLICATION_STATUS.REVOKED;
         application.fastTrackRevoked = true;
         application.fastTrackRevokeReason = '快速通道材料补交逾期';
@@ -216,17 +220,20 @@ class SchedulerService {
           itemCode: application.serviceItem?.itemCode,
           itemName: application.serviceItem?.itemName,
           applicantName: application.applicant?.name,
-          deadline: deadline,
-          currentStatus: application.currentStatus
+          applicantId: application.applicant?._id,
+          originalDeadline: deadline,
+          currentStatus: application.currentStatus,
+          revokeReason: application.fastTrackRevokeReason
         });
       }
       else if (deadline <= threeDaysLater && deadline > now) {
         const daysRemaining = Math.ceil((deadline - now) / (1000 * 60 * 60 * 24));
         
-        const alreadyRemindedRecently = application.fastTrackLastRemindedAt && 
-          new Date(application.fastTrackLastRemindedAt) > oneDayAgo;
+        const deadlineStr = deadline.toISOString().split('T')[0];
+        const lastRemindedDeadlineStr = application.fastTrackLastRemindedDeadline?.toISOString().split('T')[0];
+        const alreadyRemindedForThisDeadline = lastRemindedDeadlineStr === deadlineStr;
 
-        if (alreadyRemindedRecently) {
+        if (alreadyRemindedForThisDeadline) {
           skipped.push({
             applicationId: application._id,
             applicationNo: application.applicationNo,
@@ -237,7 +244,8 @@ class SchedulerService {
             daysRemaining,
             currentStatus: application.currentStatus,
             lastRemindedAt: application.fastTrackLastRemindedAt,
-            reason: '24小时内已提醒过，跳过重复提醒'
+            lastRemindedDeadline: application.fastTrackLastRemindedDeadline,
+            reason: `已针对截止期 ${deadlineStr} 提醒过，跳过重复提醒`
           });
         } else {
           await notificationService.createNotification(
@@ -251,6 +259,7 @@ class SchedulerService {
           );
 
           application.fastTrackLastRemindedAt = now;
+          application.fastTrackLastRemindedDeadline = deadline;
           await application.save();
 
           reminded.push({

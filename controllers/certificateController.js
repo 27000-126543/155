@@ -236,3 +236,15 @@ exports.getPendingSyncList = asyncHandler(async (req, res) => {
     }
   });
 });
+
+exports.getSyncRetryDashboard = asyncHandler(async (req, res) => {
+  const { page = 1, limit = 20, status } = req.query;
+
+  const result = await certificateService.getSyncRetryDashboard({
+    page: parseInt(page),
+    limit: parseInt(limit),
+    status
+  });
+
+  successResponse(res, result);
+});

@@ -380,6 +380,7 @@ class CertificateService {
       for (const cert of failedCerts) {
         cert.sharingPlatformSync.synced = false;
         cert.sharingPlatformSync.syncError = errorMsg;
+        cert.sharingPlatformSync.syncRetries = (cert.sharingPlatformSync.syncRetries || 0) + 1;
         cert.sharingPlatformSync.lastSyncAttempt = new Date();
         await cert.save();
         
@@ -388,7 +389,7 @@ class CertificateService {
           applicationNo: cert.application?.applicationNo,
           status: 'failed',
           error: errorMsg,
-          retryCount: cert.sharingPlatformSync.syncRetries || 0
+          retryCount: cert.sharingPlatformSync.syncRetries
         });
       }
       
@@ -415,6 +416,7 @@ class CertificateService {
       for (const cert of failedCerts) {
         cert.sharingPlatformSync.synced = false;
         cert.sharingPlatformSync.syncError = platformAccessError;
+        cert.sharingPlatformSync.syncRetries = (cert.sharingPlatformSync.syncRetries || 0) + 1;
         cert.sharingPlatformSync.lastSyncAttempt = new Date();
         await cert.save();
         
@@ -423,7 +425,7 @@ class CertificateService {
           applicationNo: cert.application?.applicationNo,
           status: 'failed',
           error: platformAccessError,
-          retryCount: cert.sharingPlatformSync.syncRetries || 0
+          retryCount: cert.sharingPlatformSync.syncRetries
         });
       }
       
@@ -439,6 +441,7 @@ class CertificateService {
 
     for (const cert of failedCerts) {
       try {
+        cert.sharingPlatformSync.syncRetries = (cert.sharingPlatformSync.syncRetries || 0) + 1;
         const result = await this.syncToSharingPlatform(cert._id);
         
         if (result.success) {
@@ -448,26 +451,32 @@ class CertificateService {
             applicationNo: cert.application?.applicationNo,
             status: 'success',
             message: '同步成功',
-            retryCount: result.retryCount
+            retryCount: cert.sharingPlatformSync.syncRetries
           });
         } else {
           failCount++;
+          cert.sharingPlatformSync.syncError = result.error;
+          cert.sharingPlatformSync.lastSyncAttempt = new Date();
+          await cert.save();
           results.push({
             certificateNo: cert.certificateNo,
             applicationNo: cert.application?.applicationNo,
             status: 'failed',
             error: result.error,
-            retryCount: result.retryCount
+            retryCount: cert.sharingPlatformSync.syncRetries
           });
         }
       } catch (error) {
         failCount++;
+        cert.sharingPlatformSync.syncError = error.message;
+        cert.sharingPlatformSync.lastSyncAttempt = new Date();
+        await cert.save();
         results.push({
           certificateNo: cert.certificateNo,
           applicationNo: cert.application?.applicationNo,
           status: 'failed',
           error: error.message,
-          retryCount: cert.sharingPlatformSync.syncRetries || 0
+          retryCount: cert.sharingPlatformSync.syncRetries
         });
       }
     }
@@ -509,6 +518,106 @@ class CertificateService {
 
     return {
       certificates,
+      pagination: {
+        currentPage: page,
+        perPage: limit,
+        totalPages: Math.ceil(total / limit),
+        total
+      }
+    };
+  }
+
+  async getSyncRetryDashboard(options = {}) {
+    const { page = 1, limit = 20, status } = options;
+    const MAX_RETRIES = 5;
+    
+    let query = { 'sharingPlatformSync.synced': false };
+    
+    if (status === 'pending') {
+      query['sharingPlatformSync.syncRetries'] = { $lt: MAX_RETRIES };
+    } else if (status === 'failed') {
+      query['sharingPlatformSync.syncError'] = { $exists: true, $ne: null };
+      query['sharingPlatformSync.syncRetries'] = { $lt: MAX_RETRIES };
+    } else if (status === 'max_retries') {
+      query['sharingPlatformSync.syncRetries'] = { $gte: MAX_RETRIES };
+    }
+
+    const skip = (page - 1) * limit;
+
+    const [certificates, total, totalPending, totalFailed, totalMaxRetries] = await Promise.all([
+      Certificate.find(query)
+        .sort({ 'sharingPlatformSync.lastSyncAttempt': -1, 'sharingPlatformSync.syncRetries': -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate('holder', 'name')
+        .populate('serviceItem', 'itemName itemCode')
+        .populate('application', 'applicationNo'),
+      Certificate.countDocuments(query),
+      Certificate.countDocuments({ 
+        'sharingPlatformSync.synced': false,
+        'sharingPlatformSync.syncRetries': { $lt: MAX_RETRIES }
+      }),
+      Certificate.countDocuments({ 
+        'sharingPlatformSync.synced': false,
+        'sharingPlatformSync.syncError': { $exists: true, $ne: null },
+        'sharingPlatformSync.syncRetries': { $lt: MAX_RETRIES }
+      }),
+      Certificate.countDocuments({ 
+        'sharingPlatformSync.synced': false,
+        'sharingPlatformSync.syncRetries': { $gte: MAX_RETRIES }
+      })
+    ]);
+
+    const sharePlatformUrl = process.env.SHARE_PLATFORM_URL;
+    let platformStatus = 'configured';
+    let platformError = null;
+    
+    if (!sharePlatformUrl) {
+      platformStatus = 'not_configured';
+      platformError = '共享平台地址未配置';
+    } else {
+      try {
+        await axios.get(`${sharePlatformUrl}/health`, { timeout: 3000 });
+        platformStatus = 'available';
+      } catch (error) {
+        platformStatus = 'unavailable';
+        platformError = `共享平台访问失败: ${error.message}`;
+      }
+    }
+
+    const formattedCerts = certificates.map(cert => ({
+      id: cert._id,
+      certificateNo: cert.certificateNo,
+      certificateName: cert.certificateName,
+      applicationNo: cert.application?.applicationNo,
+      itemCode: cert.serviceItem?.itemCode,
+      itemName: cert.serviceItem?.itemName,
+      holderName: cert.holderInfo?.name || cert.holder?.name,
+      holderIdCard: cert.holderInfo?.idCard,
+      status: cert.status,
+      generatedAt: cert.generatedAt,
+      sharingPlatformSync: {
+        synced: cert.sharingPlatformSync.synced,
+        syncedAt: cert.sharingPlatformSync.syncedAt,
+        syncError: cert.sharingPlatformSync.syncError,
+        syncRetries: cert.sharingPlatformSync.syncRetries || 0,
+        lastSyncAttempt: cert.sharingPlatformSync.lastSyncAttempt
+      },
+      canRetry: (cert.sharingPlatformSync.syncRetries || 0) < MAX_RETRIES,
+      maxRetries: MAX_RETRIES
+    }));
+
+    return {
+      summary: {
+        total,
+        totalPending,
+        totalFailed,
+        totalMaxRetries,
+        platformStatus,
+        platformError,
+        sharePlatformConfigured: !!sharePlatformUrl
+      },
+      certificates: formattedCerts,
       pagination: {
         currentPage: page,
         perPage: limit,
